@@ -1,0 +1,268 @@
+#!/usr/bin/perl -w
+#use strict;
+my $dbg = 0;
+
+for ( $idx = 0; $idx <= $#ARGV; $idx++) {
+    if ( $ARGV [$idx] eq 'dbg' ) {
+        $dbg = 1;
+        # dumb ways to delete an element
+        for ( ; $idx < $#ARGV; $idx++) {
+            $ARGV [$idx] = $ARGV [$idx + 1];
+        }
+        pop (@ARGV);
+        last;
+    }
+}
+
+my $ndkex = "$0.cfg";
+print "Parsing extracted NDK sample: '$ndkex'\n", if ( $dbg );
+
+my $NDKIN;
+open ( $NDKIN, "<", $ndkex ) || die "Failed to read '$ndkex'\n";
+
+# Assumptions:
+# 1) No space in all path names and file names
+# 2) Using traditional extensions: .c, .cpp, .o, .a, etc.
+
+
+while ( <$NDKIN> ) {
+    if (/^#/) {
+        next;
+    }
+    if (/^---/) {
+        last;
+    }
+    # remove \r and \n, in either cygwin or Windows
+    s/\r//;
+    s/\n//;
+
+    # Trim head and tail
+    s/CreateProcess\(NULL,//;
+    s/,...\)//;
+
+    # Convert Winodws \ to /
+    s/\\/\//g;
+    # Fix errenous //
+    s|//|/|g;
+    # Collapse spaces to a single and trim leading and trailing
+    s/  +/ /g;
+    s/^ *//;
+    s/ *$//;
+    # Fix .. directory back up
+    while ( s|/[^/..]+?/\.\./|/|g ) {}
+
+    @args = split ( " " );
+    $toolname = shift @args;
+
+    $mode = 0;
+
+    $last_ = '';
+    print "TOOLNAME: $toolname\n", if ( $dbg );
+    for ( $idx = 0; $idx <= $#args; $idx++) {
+        $_ = $args[$idx];
+        print "$_\n", if ( $dbg );
+        if (( $toolname =~ /-gcc/ ) && ( $_ eq '-c' )) {
+            $mode = 1;
+            $compileCTool = $toolname;
+            $compileCTool =~ s/ *$//;
+            $compileCTool =~ s|^([a-zA-Z]):/|/cygdrive/$1/|;
+            $compileCTool .= '.exe';
+            print "compileCTool: $compileCTool\n", if ($dbg);
+        }
+        if (( $toolname =~ /-g\+\+/ ) && ( $_ eq '-c' )) {
+            $mode = 2;
+            $compileCPPTool = $toolname;
+            $compileCPPTool =~ s/ *$//;
+            $compileCPPTool =~ s|^([a-zA-Z]):/|/cygdrive/$1/|;
+            $compileCPPTool .= '.exe';
+            print "compileCPPTool: $compileCPPTool\n", if ($dbg);
+        }
+        if ((( $toolname =~ /-g\+\+/ ) || ( $toolname =~ /-gcc/ )) && 
+            ( $last_ ne '-o' ) &&
+            ( /\.a/ || /\.o/ )) {
+            $mode = 3;
+            $linkerTool = $toolname;
+            $linkerTool =~ s/ *$//;
+            $linkerTool =~ s|^([a-zA-Z]):/|/cygdrive/$1/|;
+            $linkerTool .= '.exe';
+            print "linkerTool: $linkerTool\n", if ($dbg);
+        }
+        if ( $toolname =~ /-strip/ ) {
+            $mode = 4;
+            $stripTool = $toolname;
+            $stripTool =~ s/ *$//;
+            $stripTool =~ s|^([a-zA-Z]):/|/cygdrive/$1/|;
+            $stripTool .= '.exe';
+            print "stripTool: $stripTool\n", if ($dbg);
+        }
+        $last_ = $_;
+    }
+
+    print "MODE: $mode (1=c, 2=cpp, 3=link, 4=strip)\n", if ($dbg);
+    if (($mode == 1) || ($mode == 2)) {
+        for ( $idx = 0; $idx <= $#args; $idx++) {
+            $_ = $args[$idx];
+            if ( $_ eq '-MF' ) {
+                # Will add when we see -c flag
+                print "$_\n", if ($dbg);
+                $idx++;
+                next;
+            }
+            if ( $_ eq '-c' ) {
+                # requested to compile. Drop it. It will be supplied by the caller
+                print "$_\n", if ($dbg);
+                next;
+            }
+            if ( /\.c$/ || /\.cpp$/ ) {
+                print "$_\n", if ($dbg);
+                next;
+            }
+            if ( $_ eq '-o' ) {
+                # requested to compile. Drop it. It will be supplied by the caller
+                $idx++;
+                print "$_\n", if ($dbg);
+                next;
+            }
+            if ( $mode == 1 ) {
+                push ( @compileCopts, $_ );
+            } else {
+                push ( @compileCPPopts, $_ );
+            }
+        }
+    } elsif ( $mode == 3 ) {
+        for ( $idx = 0; $idx <= $#args; $idx++) {
+            $_ = $args[$idx];
+            if ( $_ eq '-o' ) {
+                # requested to compile. Drop it. It will be supplied by the caller
+                $idx++;
+                print "$_\n", if ($dbg);
+                next;
+            }
+            if ( /\.o$/ ) {
+                # requested to compile. Drop it. It will be supplied by the caller
+                print "$_\n", if ($dbg);
+                next;
+            }
+            push ( @linkeropts, $_ );
+        }
+    } elsif ( $mode == 4 ) {
+        for ( $idx = 0; $idx <= $#args; $idx++) {
+            $_ = $args[$idx];
+            if ( !/^-/ ) {
+                # requested to strip. Drop it. It will be supplied by the caller
+                print "$_\n", if ($dbg);
+                next;
+            }
+            push ( @stripopts, @_ );
+        }
+    }
+    print "\n-------------------\n\n", if ( $dbg );
+}
+close ( $NDKIN );
+
+#print join (" ", @compileCopts)."\n\n";
+#print join (" ", @compileCPPopts)."\n\n";
+#print join (" ", @linkeropts)."\n\n";
+
+
+
+
+
+
+$mode = 0;
+$output = '';
+$compileflag = 0;
+$outputflag = 0;
+$cSrcflag = 0;
+$cppSrcflag = 0;
+$objflag = 0;
+for ( $idx = 0; $idx <= $#ARGV; $idx++) {
+    $_ = $ARGV [$idx];
+    push (@opts, $_);
+    if ( /\.c$/ ) {
+        $cSrcflag = 1;
+        $mode = 1;  # compile .c
+        $csrc = $_;
+        $odsrc = $csrc;
+        $odsrc =~ s/\.c$/.o.d/;
+        push (@opts, "-MF");
+        push (@opts, "$odsrc");
+    }
+    if ( /\.cpp$/ ) {
+        $cppSrcflag = 1;
+        $mode = 2;  # compile .cpp
+        $cppsrc = $_;
+        $odsrc = $cppsrc;
+        $odsrc =~ s/\.cpp$/.o.d/;
+        push (@opts, "-MF");
+        push (@opts, "$odsrc");
+    }
+    if ( $_ eq '-o' ) {
+        $outputflag = 1;
+        $output = $ARGV [$idx + 1];
+    }
+    if ( $_ eq '-c' ) {
+        $compileflag = 1;
+    }
+    if ( /\.a$/ || /\.o$/ ) {
+        $objflag = 1;
+        $mode = 3;  # link
+    }
+}
+
+
+
+if ($compileflag) {
+    # compile only
+    if ($cppSrcflag) {
+        @cmds = ($compileCPPTool, @opts, @compileCPPopts);
+    } else {
+        @cmds = ($compileCTool, @opts, @compileCopts);
+    }
+} else {
+    # either link only or build all
+    if ($cSrcflag) {
+        # build all .c
+        @cmds = ($compileCTool, @opts, @compileCopts, @linkeropts);
+    } elsif ($cppSrcflag) {
+        # build all .cpp
+        @cmds = ($compileCPPTool, @opts, @compileCPPopts, @linkeropts);
+    } else {
+        # link only
+        @cmds = ($linkerTool, @opts, @linkeropts);
+    }
+    @stripcmds = ($stripTool, @stripopts, $output);
+}
+
+#if ($mode == 1) {
+#    @cmds = ($compileCTool, @opts, @compileCopts);
+#} elsif ($mode == 2) {
+#    @cmds = ($compileCPPTool, @opts, @compileCPPopts);
+#} elsif ($mode == 3) {
+#    @cmds = ($linkerTool, @opts, @linkeropts);
+#}
+
+
+
+if ( $dbg ) {
+    print "\nCMD: ".join("\n", @cmds), "\n";
+} else {
+    print "\nCMD: ".join(" ", @cmds), "\n";
+}
+system(@cmds);
+
+if ( defined (@stripcmds) ) {
+    if ( $dbg ) {
+        print "\nCMD: ".join("\n", @stripcmds), "\n";
+    } else {
+        print "\nCMD: ".join(" ", @stripcmds), "\n";
+    }
+    system(@stripcmds);
+}
+
+#if ($mode == 3) {
+#    # strip too
+#    @cmds = ($stripTool, @stripopts, $output);
+#    print "\nCMD: ".join(" ", @cmds), "\n";
+#    system(@cmds);
+#}
