@@ -1,0 +1,5 @@
+*.o
+*.d
+extract_ndk_opts_cpp
+libs
+obj

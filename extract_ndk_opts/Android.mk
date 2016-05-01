@@ -1,4 +1,4 @@
-LOCAL_PATH := D:\2\safe\gits\github\aagcc\extract_ndk_opts
+LOCAL_PATH := D:\2\safe\gits\github\agcc\extract_ndk_opts
 include $(CLEAR_VARS)
 LOCAL_MODULE := extractagccargs
 #LOCAL_C_INCLUDES += 
